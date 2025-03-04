@@ -1,0 +1,79 @@
+name: TruffleHog Secret Scan on PR
+
+on:
+  pull_request:
+    branches:
+      - main  # Change this if needed
+
+jobs:
+  trufflehog_scan:
+    name: Scan PR for Secrets
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Ensures we get the previous commit for accurate diffs
+
+      - name: Install TruffleHog
+        run: pip install trufflehog==2.1.0  # Install TruffleHog v2 (better regex support)
+
+      - name: Get Changed Files
+        id: changed-files
+        run: |
+          git fetch origin ${{ github.event.repository.default_branch }}
+          echo "CHANGED_FILES=$(git diff --name-only origin/${{ github.event.repository.default_branch }} HEAD | tr '\n' ' ')" >> $GITHUB_ENV
+
+      - name: Run TruffleHog on Changed Files
+        id: trufflehog_scan
+        run: |
+          EXIT_CODE=0
+          SCAN_RESULTS=""
+          for file in $CHANGED_FILES; do
+            if [[ -f "$file" ]]; then
+              echo "Scanning $file..."
+              RESULT=$(trufflehog --regex --entropy=True "$file" 2>&1)
+              echo "$RESULT"
+              SCAN_RESULTS+="$RESULT"$'\n\n'
+              
+              # If secrets are found, set EXIT_CODE to 1
+              if echo "$RESULT" | grep -q 'Reason:'; then
+                  EXIT_CODE=1
+              fi
+            fi
+          done
+
+          # Save results to a file for use in PR comment
+          echo "$SCAN_RESULTS" > scan_results.txt
+
+          exit $EXIT_CODE  # Exit with 1 if secrets are found
+
+      - name: Upload Scan Results as Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: TruffleHog-Scan-Results
+          path: scan_results.txt
+          retention-days: 5
+
+      - name: Comment on PR with Scan Results
+        uses: mshick/add-pr-comment@v2
+        with:
+          message: |
+            🔍 **TruffleHog Scan Results** 🔍
+
+            - ✅ Scan **Completed**
+            - 🚀 Repository: ${{ github.repository }}
+            - 📄 Files Scanned: ${{ env.CHANGED_FILES }}
+
+            **Scan Details:** [View Full Report](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            
+            **Action Required:**
+            - ❌ If secrets were found, please remove them before merging.
+            - ✅ If no secrets were found, you're good to go!
+        env:
+          GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+
+      - name: Fail if Secrets Were Found
+        if: failure()
+        run: exit 1
